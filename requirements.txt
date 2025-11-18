@@ -1,0 +1,24 @@
+# Hardware Control Center Dependencies
+
+# GUI Framework
+PyQt5>=5.15.0
+
+# Serial Communication
+pyserial>=3.5
+
+# GPS/NMEA Parsing
+pynmea2>=1.18.0
+
+# USB Communication
+pyusb>=1.2.1
+pyudev>=0.24.0
+
+# Data Visualization (optional, for spectrum display)
+pyqtgraph>=0.12.0
+numpy>=1.21.0
+
+# SPI Communication (for LoRa)
+spidev>=3.5
+
+# I2C Communication (for RTC)
+smbus2>=0.4.0

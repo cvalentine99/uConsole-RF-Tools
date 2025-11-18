@@ -1,0 +1,40 @@
+{
+  "gps": {
+    "enabled": true,
+    "device": "/dev/ttyUSB0",
+    "baud_rate": 9600,
+    "auto_time_sync": true
+  },
+  "lora": {
+    "enabled": false,
+    "spi_device": "/dev/spidev0.0",
+    "frequency": 915000000,
+    "spreading_factor": 7,
+    "bandwidth": 125000,
+    "coding_rate": 5,
+    "tx_power": 17,
+    "preamble_length": 8
+  },
+  "rtlsdr": {
+    "enabled": false,
+    "device_index": 0,
+    "sample_rate": 2048000,
+    "frequency": 100000000,
+    "gain": "auto"
+  },
+  "rtc": {
+    "enabled": true,
+    "type": "ds3231",
+    "i2c_device": "/dev/i2c-1",
+    "sync_from_gps": true
+  },
+  "usb": {
+    "enabled": true,
+    "auto_detect": true,
+    "power_management": false
+  },
+  "logging": {
+    "level": "info",
+    "console": true
+  }
+}
