@@ -24,31 +24,56 @@ A comprehensive graphical user interface for managing multiple hardware modules 
 
 ## Installation
 
-### Prerequisites
+### Quick Install (Recommended)
+
+The easiest way to install is using the automated installation script:
 
 ```bash
-# System dependencies (Ubuntu/Debian)
+cd hardware-control-center
+./install.sh
+```
+
+The installer will:
+1. Check Python version (3.7+ required)
+2. Install system dependencies (requires sudo)
+3. Create a Python virtual environment
+4. Install Python packages in the virtual environment
+5. Add your user to hardware access groups
+6. Create a desktop launcher
+7. Set executable permissions
+
+**IMPORTANT**: After installation completes, logout and login for group changes to take effect!
+
+### Manual Installation
+
+If you prefer manual installation:
+
+```bash
+# System dependencies (Debian/Ubuntu/Raspberry Pi OS)
 sudo apt-get update
 sudo apt-get install -y \
     python3-pip \
-    python3-pyqt5 \
+    python3-venv \
+    python3-full \
     libusb-1.0-0 \
     i2c-tools \
     libi2c-dev
 
 # Add user to required groups
-sudo usermod -a -G dialout,i2c,spi,plugdev $USER
+sudo usermod -a -G dialout,i2c,spi,plugdev,gpio $USER
 # Logout and login for group changes to take effect
-```
 
-### Python Dependencies
+# Create virtual environment
+python3 -m venv venv
 
-```bash
+# Activate virtual environment
+source venv/bin/activate
+
 # Install Python packages
 pip3 install -r requirements.txt
 
-# Or install individually:
-pip3 install PyQt5 pyserial pynmea2 pyusb pyudev pyqtgraph numpy spidev smbus2
+# Deactivate when done
+deactivate
 ```
 
 ## Usage
@@ -57,14 +82,18 @@ pip3 install PyQt5 pyserial pynmea2 pyusb pyudev pyqtgraph numpy spidev smbus2
 
 ```bash
 # Run with default configuration
-python3 main.py
+./run.sh
 
 # Run with custom configuration
-python3 main.py --config my_config.json
+./run.sh --config my_config.json
 
 # Run in fullscreen mode
-python3 main.py --fullscreen
+./run.sh --fullscreen
+
+# Or find "Hardware Control Center" in your application menu
 ```
+
+The `run.sh` script automatically activates the virtual environment and launches the application.
 
 ### Configuration
 
@@ -226,8 +255,32 @@ sudo usermod -a -G dialout,i2c,spi,plugdev,gpio $USER
 # Logout and login for changes to take effect
 
 # Or run with sudo (not recommended for regular use)
-sudo python3 main.py
+sudo ./run.sh
 ```
+
+### Python Module Not Found
+
+If you see "ModuleNotFoundError" errors:
+
+```bash
+# Make sure you're using the run.sh script (not python3 main.py directly)
+./run.sh
+
+# Or activate the virtual environment manually
+source venv/bin/activate
+python3 main.py
+deactivate
+```
+
+### PEP 668 / Externally Managed Environment
+
+On newer systems (Debian 12+, Ubuntu 23.04+, Raspberry Pi OS Bookworm+), Python enforces PEP 668 which prevents system-wide pip installations. This is why we use a virtual environment. If you see this error:
+
+```
+error: externally-managed-environment
+```
+
+Solution: Use the provided `install.sh` script which creates a virtual environment automatically, or follow the manual installation instructions to create one yourself. **Do not use** `--break-system-packages` as it can damage your system.
 
 ## Development
 

@@ -55,14 +55,27 @@ else
     echo "  - i2c-tools"
 fi
 
+# Create virtual environment
+echo ""
+echo "[3/6] Creating Python virtual environment..."
+if [ ! -d "venv" ]; then
+    python3 -m venv venv
+    echo "Virtual environment created"
+else
+    echo "Virtual environment already exists"
+fi
+
 # Install Python dependencies
 echo ""
-echo "[3/6] Installing Python dependencies..."
-pip3 install --user -r requirements.txt
+echo "[4/6] Installing Python dependencies..."
+source venv/bin/activate
+pip3 install --upgrade pip
+pip3 install -r requirements.txt
+deactivate
 
 # Add user to required groups
 echo ""
-echo "[4/6] Adding user to hardware access groups..."
+echo "[5/7] Adding user to hardware access groups..."
 current_user=$(whoami)
 
 for group in dialout i2c spi plugdev gpio; do
@@ -74,7 +87,7 @@ done
 
 # Create desktop launcher (optional)
 echo ""
-echo "[5/6] Creating desktop launcher..."
+echo "[6/7] Creating desktop launcher..."
 
 desktop_file="$HOME/.local/share/applications/hardware-control-center.desktop"
 mkdir -p "$(dirname "$desktop_file")"
@@ -85,7 +98,7 @@ Version=1.0
 Type=Application
 Name=Hardware Control Center
 Comment=Unified hardware management interface
-Exec=python3 $(pwd)/main.py
+Exec=$(pwd)/run.sh
 Icon=applications-system
 Terminal=false
 Categories=System;Utility;
@@ -93,10 +106,10 @@ EOF
 
 echo "Desktop launcher created"
 
-# Make main.py executable
+# Make scripts executable
 echo ""
-echo "[6/6] Setting permissions..."
-chmod +x main.py
+echo "[7/7] Setting permissions..."
+chmod +x main.py run.sh
 
 echo ""
 echo "========================================"
@@ -107,7 +120,7 @@ echo "IMPORTANT: You must logout and login for group changes to take effect!"
 echo ""
 echo "To run the application:"
 echo "  cd $(pwd)"
-echo "  python3 main.py"
+echo "  ./run.sh"
 echo ""
 echo "Or find 'Hardware Control Center' in your application menu"
 echo ""
