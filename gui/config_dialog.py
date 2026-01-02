@@ -233,6 +233,15 @@ class ConfigDialog(QDialog):
         defaults_layout.addWidget(QLabel("Gain:"), 2, 0)
         self.sdr_gain = QComboBox()
         self.sdr_gain.addItems(['Auto', '10 dB', '20 dB', '30 dB', '40 dB'])
+        # Set gain combo to configured value
+        gain = self.config.get('rtlsdr', {}).get('gain', 'auto')
+        if gain == 'auto':
+            self.sdr_gain.setCurrentIndex(0)
+        else:
+            gain_text = f"{gain} dB"
+            idx = self.sdr_gain.findText(gain_text)
+            if idx >= 0:
+                self.sdr_gain.setCurrentIndex(idx)
         defaults_layout.addWidget(self.sdr_gain, 2, 1)
 
         defaults_group.setLayout(defaults_layout)
@@ -349,8 +358,15 @@ class ConfigDialog(QDialog):
         config['rtc']['type'] = self.rtc_type.currentText()
         config['rtc']['i2c_bus'] = self.rtc_i2c_bus.value()
         try:
-            config['rtc']['i2c_address'] = int(self.rtc_i2c_addr.text(), 16)
+            addr_text = self.rtc_i2c_addr.text().strip()
+            # Support both 0x prefix and plain hex
+            if addr_text.startswith('0x') or addr_text.startswith('0X'):
+                config['rtc']['i2c_address'] = int(addr_text, 16)
+            else:
+                config['rtc']['i2c_address'] = int(addr_text, 16)
         except ValueError:
+            # Log warning and use default
+            logger.warning(f"Invalid I2C address '{self.rtc_i2c_addr.text()}', using default 0x51")
             config['rtc']['i2c_address'] = 0x51
 
         # Update USB settings

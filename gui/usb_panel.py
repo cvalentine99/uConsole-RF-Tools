@@ -2,10 +2,22 @@
 USB Panel - USB device management
 """
 
+import logging
+
 from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QGroupBox,
                              QPushButton, QTableWidget, QTableWidgetItem)
 from PyQt5.QtCore import QTimer
-import usb.core
+
+logger = logging.getLogger(__name__)
+
+# Try to import pyusb, handle gracefully if not installed
+try:
+    import usb.core
+    import usb.util
+    USB_AVAILABLE = True
+except ImportError:
+    USB_AVAILABLE = False
+    logger.warning("pyusb not installed - USB device enumeration will be limited")
 
 
 class USBPanel(QWidget):
@@ -57,6 +69,16 @@ class USBPanel(QWidget):
         """Refresh USB device list"""
         self.device_table.setRowCount(0)
 
+        if not USB_AVAILABLE:
+            # Show message when pyusb is not installed
+            self.device_table.insertRow(0)
+            self.device_table.setItem(0, 0, QTableWidgetItem("--"))
+            self.device_table.setItem(0, 1, QTableWidgetItem("--"))
+            self.device_table.setItem(0, 2, QTableWidgetItem("--"))
+            self.device_table.setItem(0, 3, QTableWidgetItem("pyusb not installed"))
+            self.device_table.setItem(0, 4, QTableWidgetItem("pip install pyusb"))
+            return
+
         try:
             devices = usb.core.find(find_all=True)
 
@@ -80,7 +102,7 @@ class USBPanel(QWidget):
                 self.device_table.setItem(row, 4, QTableWidgetItem(product))
 
         except Exception as e:
-            print(f"Error refreshing USB devices: {e}")
+            logger.error(f"Error refreshing USB devices: {e}")
 
     def is_active(self):
         """Check if USB panel is active"""

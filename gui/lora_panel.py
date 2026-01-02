@@ -34,6 +34,7 @@ class LoRaPanel(QWidget):
         self.meshtastic_session = None
         self.polling_thread = None
         self.running = False
+        self._config_enabled = config.get('enabled', False)  # Track configured state
 
         self.last_rssi = None
         self.last_snr = None
@@ -280,8 +281,15 @@ class LoRaPanel(QWidget):
         """Poll Meshtastic for new messages"""
         host = self.config.get('meshtastic_host', 'localhost')
         port = self.config.get('meshtastic_port', 443)
+        consecutive_errors = 0
+        max_consecutive_errors = 5
 
-        while self.running and self.meshtastic_session:
+        while self.running:
+            # Check if session is still valid
+            if not self.meshtastic_session:
+                logger.warning("Meshtastic session lost, stopping polling")
+                break
+
             try:
                 url = f"https://{host}:{port}/api/v1/fromradio?all=false"
                 response = self.meshtastic_session.get(url, timeout=10)
@@ -289,11 +297,18 @@ class LoRaPanel(QWidget):
                 if response.status_code == 200 and response.content:
                     # Process received data
                     # In a full implementation, this would decode protobuf messages
-                    pass
+                    consecutive_errors = 0  # Reset on success
 
             except Exception as e:
+                consecutive_errors += 1
                 if self.running:
-                    logger.debug(f"Meshtastic poll: {e}")
+                    logger.debug(f"Meshtastic poll error ({consecutive_errors}/{max_consecutive_errors}): {e}")
+
+                # Stop polling after too many consecutive errors
+                if consecutive_errors >= max_consecutive_errors:
+                    logger.error("Too many consecutive polling errors, stopping")
+                    self.status_changed.emit("Connection lost", "red")
+                    break
 
             time.sleep(1)
 
@@ -392,8 +407,7 @@ class LoRaPanel(QWidget):
             else:
                 self._send_direct(message)
 
-            timestamp = datetime.now().strftime("%H:%M:%S")
-            self.log_message(f"[{timestamp}] TX: {message}")
+            self.log_message(f"TX: {message}")
             self.tx_input.clear()
 
         except Exception as e:
@@ -455,9 +469,9 @@ class LoRaPanel(QWidget):
         return self.last_rssi
 
     def get_config(self):
-        """Get current configuration"""
+        """Get current configuration (returns configured state, not runtime state)"""
         return {
-            'enabled': self.lora_active,
+            'enabled': self._config_enabled,  # Return configured state, not runtime
             'mode': 'meshtastic' if self.mode_combo.currentIndex() == 0 else 'direct',
             'meshtastic_host': self.config.get('meshtastic_host', 'localhost'),
             'meshtastic_port': self.config.get('meshtastic_port', 443),
@@ -474,6 +488,7 @@ class LoRaPanel(QWidget):
     def apply_config(self, config):
         """Apply configuration"""
         self.config = config
+        self._config_enabled = config.get('enabled', False)  # Track configured state
 
         mode = config.get('mode', 'meshtastic')
         self.mode_combo.setCurrentIndex(0 if mode == 'meshtastic' else 1)

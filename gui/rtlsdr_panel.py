@@ -21,9 +21,10 @@ logger = logging.getLogger(__name__)
 class RTLSDRPanel(QWidget):
     """RTL-SDR module control panel with real hardware support"""
 
-    # Signal for thread-safe UI updates
+    # Signals for thread-safe UI updates
     spectrum_updated = pyqtSignal(object)  # numpy array
     status_changed = pyqtSignal(str, str)  # text, color
+    power_updated = pyqtSignal(float, float, float)  # avg_power, peak_power, peak_freq
 
     def __init__(self, config):
         super().__init__()
@@ -32,6 +33,7 @@ class RTLSDRPanel(QWidget):
         self.sdr_active = False
         self.capture_thread = None
         self.running = False
+        self._config_enabled = config.get('enabled', False)  # Track configured state
 
         self.current_freq = 100000000  # 100 MHz default
         self.sample_rate = 2048000
@@ -41,6 +43,7 @@ class RTLSDRPanel(QWidget):
 
         # Connect signals
         self.status_changed.connect(self._on_status_changed)
+        self.power_updated.connect(self._on_power_updated)
 
     def init_ui(self):
         """Initialize user interface"""
@@ -85,6 +88,9 @@ class RTLSDRPanel(QWidget):
         self.freq_presets.currentIndexChanged.connect(self._on_preset_changed)
         freq_layout.addWidget(self.freq_presets)
         config_layout.addLayout(freq_layout, 0, 1)
+
+        # Connect freq_spin to reset preset to Custom when manually changed
+        self.freq_spin.valueChanged.connect(self._on_freq_manually_changed)
 
         # Sample rate
         config_layout.addWidget(QLabel("Sample Rate:"), 1, 0)
@@ -185,7 +191,19 @@ class RTLSDRPanel(QWidget):
             5: 156.8, 6: 162.4, 7: 433, 8: 915
         }
         if index in presets:
+            # Block signals to prevent triggering _on_freq_manually_changed
+            self.freq_spin.blockSignals(True)
             self.freq_spin.setValue(int(presets[index]))
+            self.freq_spin.blockSignals(False)
+
+    def _on_freq_manually_changed(self, value):
+        """Handle manual frequency change - reset preset to Custom"""
+        # Only change preset if not at index 0 and value doesn't match any preset
+        presets = {88: 1, 100: 2, 118: 3, 121: 4, 156: 5, 162: 6, 433: 7, 915: 8}
+        if value not in presets or presets.get(value) != self.freq_presets.currentIndex():
+            self.freq_presets.blockSignals(True)
+            self.freq_presets.setCurrentIndex(0)  # Set to "Custom"
+            self.freq_presets.blockSignals(False)
 
     def _on_gain_changed(self, text):
         """Handle gain mode change"""
@@ -206,6 +224,11 @@ class RTLSDRPanel(QWidget):
         """Update status label (thread-safe)"""
         self.status_label.setText(text)
         self.status_label.setStyleSheet(f"color: {color};")
+
+    def _on_power_updated(self, avg_power, peak_power, peak_freq):
+        """Update power labels (thread-safe)"""
+        self.power_label.setText(f"Power: {avg_power:.1f} dBFS")
+        self.peak_label.setText(f"Peak: {peak_freq/1e6:.3f} MHz ({peak_power:.1f} dB)")
 
     def initialize(self):
         """Initialize RTL-SDR"""
@@ -386,11 +409,9 @@ class RTLSDRPanel(QWidget):
                 peak_idx = np.argmax(power_db)
                 peak_freq = self.current_freq + (peak_idx - fft_size/2) * self.sample_rate / fft_size
 
-                # Emit for UI update (would be used with pyqtgraph)
+                # Emit for UI update
                 self.spectrum_updated.emit(power_db)
-
-                # Update power labels via signal
-                # (In full implementation, would update spectrum plot)
+                self.power_updated.emit(float(avg_power), float(peak_power), float(peak_freq))
 
             except Exception as e:
                 if self.running:
@@ -407,7 +428,7 @@ class RTLSDRPanel(QWidget):
         return self.current_freq
 
     def get_config(self):
-        """Get configuration"""
+        """Get configuration (returns configured state, not runtime state)"""
         # Parse sample rate
         sample_rate_text = self.sample_rate_combo.currentText()
         if 'kHz' in sample_rate_text:
@@ -416,7 +437,7 @@ class RTLSDRPanel(QWidget):
             sample_rate = int(float(sample_rate_text.replace(' MHz', '')) * 1000000)
 
         return {
-            'enabled': self.sdr_active,
+            'enabled': self._config_enabled,  # Return configured state, not runtime
             'device_index': self.config.get('device_index', 0),
             'frequency': self.freq_spin.value() * 1000000,
             'sample_rate': sample_rate,
@@ -426,6 +447,7 @@ class RTLSDRPanel(QWidget):
     def apply_config(self, config):
         """Apply configuration"""
         self.config = config
+        self._config_enabled = config.get('enabled', False)  # Track configured state
 
         if 'frequency' in config:
             self.freq_spin.setValue(config['frequency'] // 1000000)
