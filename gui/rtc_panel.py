@@ -1,21 +1,59 @@
 """
 RTC Panel - Real-Time Clock display and control
+Supports PCF85063A (HackerGadgets AIO) and DS3231
+Optimized for HackerGadgets uConsole AIO Extension Board
 """
 
+import logging
+import os
+from datetime import datetime
+
 from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QGroupBox,
-                             QLabel, QPushButton, QTimeEdit, QDateEdit)
+                             QLabel, QPushButton, QTimeEdit, QDateEdit,
+                             QComboBox, QMessageBox)
 from PyQt5.QtCore import QTimer, QTime, QDate
 from PyQt5.QtGui import QFont
-from datetime import datetime
+
+logger = logging.getLogger(__name__)
+
+# PCF85063A Register definitions
+PCF85063A_ADDR = 0x51
+PCF85063A_REG_CTRL1 = 0x00
+PCF85063A_REG_CTRL2 = 0x01
+PCF85063A_REG_SECONDS = 0x04
+PCF85063A_REG_MINUTES = 0x05
+PCF85063A_REG_HOURS = 0x06
+PCF85063A_REG_DAYS = 0x07
+PCF85063A_REG_WEEKDAYS = 0x08
+PCF85063A_REG_MONTHS = 0x09
+PCF85063A_REG_YEARS = 0x0A
+
+# DS3231 Register definitions (for compatibility)
+DS3231_ADDR = 0x68
+DS3231_REG_SECONDS = 0x00
+DS3231_REG_TEMP_MSB = 0x11
+
+
+def bcd_to_dec(bcd):
+    """Convert BCD to decimal"""
+    return ((bcd >> 4) * 10) + (bcd & 0x0F)
+
+
+def dec_to_bcd(dec):
+    """Convert decimal to BCD"""
+    return ((dec // 10) << 4) | (dec % 10)
 
 
 class RTCPanel(QWidget):
-    """RTC module control panel"""
+    """RTC module control panel with PCF85063A support"""
 
     def __init__(self, config):
         super().__init__()
         self.config = config
         self.rtc_active = False
+        self.i2c_bus = None
+        self.rtc_type = config.get('type', 'pcf85063a')
+        self.rtc_address = config.get('i2c_address', PCF85063A_ADDR)
 
         self.init_ui()
 
@@ -39,16 +77,31 @@ class RTCPanel(QWidget):
         time_group.setLayout(time_layout)
         layout.addWidget(time_group)
 
-        # Temperature (DS3231 only)
-        temp_group = QGroupBox("Temperature (DS3231)")
-        temp_layout = QHBoxLayout()
+        # RTC Info group
+        info_group = QGroupBox("RTC Information")
+        info_layout = QVBoxLayout()
 
-        self.temp_label = QLabel("-- °C")
-        self.temp_label.setFont(QFont("Arial", 14))
-        temp_layout.addWidget(self.temp_label)
+        self.status_label = QLabel("Not Connected")
+        self.status_label.setFont(QFont("Arial", 10))
+        info_layout.addWidget(self.status_label)
 
-        temp_group.setLayout(temp_layout)
-        layout.addWidget(temp_group)
+        self.chip_label = QLabel("Chip: --")
+        info_layout.addWidget(self.chip_label)
+
+        self.battery_label = QLabel("Battery: --")
+        info_layout.addWidget(self.battery_label)
+
+        # RTC type selector
+        type_layout = QHBoxLayout()
+        type_layout.addWidget(QLabel("RTC Type:"))
+        self.type_combo = QComboBox()
+        self.type_combo.addItems(['PCF85063A (AIO)', 'DS3231', 'System RTC'])
+        type_layout.addWidget(self.type_combo)
+        type_layout.addStretch()
+        info_layout.addLayout(type_layout)
+
+        info_group.setLayout(info_layout)
+        layout.addWidget(info_group)
 
         # Set time group
         set_group = QGroupBox("Set Time")
@@ -77,6 +130,10 @@ class RTCPanel(QWidget):
         sync_btn = QPushButton("Sync from System")
         sync_btn.clicked.connect(self.sync_from_system)
         button_row.addWidget(sync_btn)
+
+        sync_to_sys_btn = QPushButton("Sync to System")
+        sync_to_sys_btn.clicked.connect(self.sync_to_system)
+        button_row.addWidget(sync_to_sys_btn)
 
         set_layout.addLayout(button_row)
         set_group.setLayout(set_layout)
@@ -112,46 +169,310 @@ class RTCPanel(QWidget):
 
     def connect_rtc(self):
         """Connect to RTC"""
+        rtc_type = self.type_combo.currentText()
+
+        if 'System' in rtc_type:
+            self._connect_system_rtc()
+        else:
+            self._connect_i2c_rtc()
+
+    def _connect_system_rtc(self):
+        """Use system RTC (hwclock)"""
         try:
-            # Initialize RTC hardware
+            # Check if we can access system RTC
+            result = os.popen('hwclock -r 2>/dev/null').read()
+            if result:
+                self.rtc_active = True
+                self.rtc_type = 'system'
+                self.connect_btn.setText("Disconnect RTC")
+                self.status_label.setText("Connected to System RTC")
+                self.status_label.setStyleSheet("color: green;")
+                self.chip_label.setText("Chip: System hwclock")
+                self.battery_label.setText("Battery: N/A")
+                self.update_timer.start(1000)
+                logger.info("Connected to system RTC")
+            else:
+                raise Exception("hwclock not accessible")
+        except Exception as e:
+            self.status_label.setText(f"System RTC failed: {str(e)}")
+            self.status_label.setStyleSheet("color: red;")
+            logger.error(f"System RTC connection failed: {e}")
+
+    def _connect_i2c_rtc(self):
+        """Connect to I2C RTC (PCF85063A or DS3231)"""
+        try:
+            import smbus2
+
+            # Determine I2C bus
+            i2c_bus_num = self.config.get('i2c_bus', 1)
+
+            # Try to find the correct bus
+            # On uConsole AIO, PCF85063A might be on a specific bus
+            possible_buses = [i2c_bus_num, 1, 22, 11, 3]
+
+            rtc_type = self.type_combo.currentText()
+            if 'PCF85063A' in rtc_type:
+                self.rtc_address = PCF85063A_ADDR
+                self.rtc_type = 'pcf85063a'
+            else:
+                self.rtc_address = DS3231_ADDR
+                self.rtc_type = 'ds3231'
+
+            connected = False
+            for bus_num in possible_buses:
+                try:
+                    self.i2c_bus = smbus2.SMBus(bus_num)
+                    # Try to read from the RTC
+                    if self.rtc_type == 'pcf85063a':
+                        self.i2c_bus.read_byte_data(self.rtc_address, PCF85063A_REG_SECONDS)
+                    else:
+                        self.i2c_bus.read_byte_data(self.rtc_address, DS3231_REG_SECONDS)
+                    connected = True
+                    logger.info(f"Found RTC on I2C bus {bus_num} at address 0x{self.rtc_address:02x}")
+                    break
+                except Exception:
+                    if self.i2c_bus:
+                        self.i2c_bus.close()
+                    continue
+
+            if not connected:
+                raise Exception(f"RTC not found at address 0x{self.rtc_address:02x}")
+
             self.rtc_active = True
             self.connect_btn.setText("Disconnect RTC")
-            self.update_timer.start(1000)  # Update every second
+            self.status_label.setText(f"Connected (bus {bus_num}, addr 0x{self.rtc_address:02x})")
+            self.status_label.setStyleSheet("color: green;")
+
+            if self.rtc_type == 'pcf85063a':
+                self.chip_label.setText("Chip: NXP PCF85063A")
+                self.battery_label.setText("Battery: CR1220")
+                self._check_pcf85063a_status()
+            else:
+                self.chip_label.setText("Chip: Maxim DS3231")
+                self.battery_label.setText("Battery: CR2032")
+
+            self.update_timer.start(1000)
+            logger.info(f"Connected to {self.rtc_type.upper()} RTC")
+
+        except ImportError:
+            self.status_label.setText("smbus2 not installed")
+            self.status_label.setStyleSheet("color: red;")
+            logger.error("smbus2 library not installed")
         except Exception as e:
-            print(f"RTC connection failed: {e}")
+            self.status_label.setText(f"Connection failed: {str(e)}")
+            self.status_label.setStyleSheet("color: red;")
+            logger.error(f"I2C RTC connection failed: {e}")
+
+    def _check_pcf85063a_status(self):
+        """Check PCF85063A status registers"""
+        if not self.i2c_bus:
+            return
+
+        try:
+            ctrl1 = self.i2c_bus.read_byte_data(self.rtc_address, PCF85063A_REG_CTRL1)
+            seconds = self.i2c_bus.read_byte_data(self.rtc_address, PCF85063A_REG_SECONDS)
+
+            # Check oscillator stop flag (bit 7 of seconds)
+            if seconds & 0x80:
+                self.battery_label.setText("Battery: LOW (oscillator stopped)")
+                self.battery_label.setStyleSheet("color: orange;")
+                logger.warning("PCF85063A oscillator was stopped - battery may be low")
+            else:
+                self.battery_label.setText("Battery: OK")
+                self.battery_label.setStyleSheet("color: green;")
+
+        except Exception as e:
+            logger.error(f"Error checking PCF85063A status: {e}")
 
     def disconnect_rtc(self):
         """Disconnect RTC"""
         self.rtc_active = False
-        self.connect_btn.setText("Connect RTC")
         self.update_timer.stop()
+
+        if self.i2c_bus:
+            try:
+                self.i2c_bus.close()
+            except:
+                pass
+            self.i2c_bus = None
+
+        self.connect_btn.setText("Connect RTC")
+        self.status_label.setText("Disconnected")
+        self.status_label.setStyleSheet("color: gray;")
+        self.time_label.setText("--:--:--")
+        self.date_label.setText("----/--/--")
+
+        logger.info("RTC disconnected")
 
     def update_display(self):
         """Update time display"""
         if not self.rtc_active:
             return
 
-        # Read RTC time (or use system time for demo)
+        try:
+            if self.rtc_type == 'system':
+                self._read_system_rtc()
+            elif self.rtc_type == 'pcf85063a':
+                self._read_pcf85063a()
+            elif self.rtc_type == 'ds3231':
+                self._read_ds3231()
+        except Exception as e:
+            logger.error(f"RTC read error: {e}")
+            self.status_label.setText(f"Read error: {str(e)[:30]}")
+            self.status_label.setStyleSheet("color: red;")
+
+    def _read_system_rtc(self):
+        """Read time from system RTC"""
         now = datetime.now()
         self.time_label.setText(now.strftime("%H:%M:%S"))
         self.date_label.setText(now.strftime("%Y-%m-%d (%A)"))
 
-        # Update temperature (simulated)
-        self.temp_label.setText("25.3 °C")
+    def _read_pcf85063a(self):
+        """Read time from PCF85063A RTC"""
+        if not self.i2c_bus:
+            return
+
+        # Read time registers (0x04 - 0x0A)
+        data = self.i2c_bus.read_i2c_block_data(self.rtc_address, PCF85063A_REG_SECONDS, 7)
+
+        seconds = bcd_to_dec(data[0] & 0x7F)  # Mask OS bit
+        minutes = bcd_to_dec(data[1] & 0x7F)
+        hours = bcd_to_dec(data[2] & 0x3F)  # 24-hour format
+        days = bcd_to_dec(data[3] & 0x3F)
+        weekday = data[4] & 0x07
+        months = bcd_to_dec(data[5] & 0x1F)
+        years = bcd_to_dec(data[6]) + 2000
+
+        weekday_names = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
+        weekday_name = weekday_names[weekday] if weekday < 7 else 'Unknown'
+
+        self.time_label.setText(f"{hours:02d}:{minutes:02d}:{seconds:02d}")
+        self.date_label.setText(f"{years}-{months:02d}-{days:02d} ({weekday_name})")
+
+    def _read_ds3231(self):
+        """Read time from DS3231 RTC"""
+        if not self.i2c_bus:
+            return
+
+        # Read time registers (0x00 - 0x06)
+        data = self.i2c_bus.read_i2c_block_data(self.rtc_address, DS3231_REG_SECONDS, 7)
+
+        seconds = bcd_to_dec(data[0] & 0x7F)
+        minutes = bcd_to_dec(data[1])
+        hours = bcd_to_dec(data[2] & 0x3F)  # Assuming 24-hour format
+        weekday = data[3]
+        days = bcd_to_dec(data[4])
+        months = bcd_to_dec(data[5] & 0x1F)
+        years = bcd_to_dec(data[6]) + 2000
+
+        weekday_names = ['', 'Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
+        weekday_name = weekday_names[weekday] if weekday < 8 else 'Unknown'
+
+        self.time_label.setText(f"{hours:02d}:{minutes:02d}:{seconds:02d}")
+        self.date_label.setText(f"{years}-{months:02d}-{days:02d} ({weekday_name})")
 
     def set_rtc_time(self):
-        """Set RTC time"""
+        """Set RTC time from UI inputs"""
+        if not self.rtc_active:
+            QMessageBox.warning(self, "Not Connected", "Please connect to RTC first.")
+            return
+
         time = self.time_edit.time()
         date = self.date_edit.date()
 
-        # Set RTC hardware time
-        print(f"Setting RTC: {date.toString()} {time.toString()}")
+        try:
+            if self.rtc_type == 'system':
+                self._set_system_rtc(date, time)
+            elif self.rtc_type == 'pcf85063a':
+                self._set_pcf85063a(date, time)
+            elif self.rtc_type == 'ds3231':
+                self._set_ds3231(date, time)
+
+            QMessageBox.information(self, "Success", "RTC time set successfully!")
+            logger.info(f"RTC time set to {date.toString()} {time.toString()}")
+
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to set RTC time:\n{str(e)}")
+            logger.error(f"Failed to set RTC time: {e}")
+
+    def _set_system_rtc(self, date, time):
+        """Set system RTC time"""
+        datetime_str = f"{date.year()}-{date.month():02d}-{date.day():02d} {time.hour():02d}:{time.minute():02d}:{time.second():02d}"
+        os.system(f'sudo hwclock --set --date="{datetime_str}"')
+
+    def _set_pcf85063a(self, date, time):
+        """Set PCF85063A RTC time"""
+        if not self.i2c_bus:
+            raise Exception("I2C bus not connected")
+
+        # Calculate weekday (0 = Sunday)
+        import calendar
+        weekday = calendar.weekday(date.year(), date.month(), date.day())
+        weekday = (weekday + 1) % 7  # Convert Monday=0 to Sunday=0
+
+        # Prepare data
+        data = [
+            dec_to_bcd(time.second()),
+            dec_to_bcd(time.minute()),
+            dec_to_bcd(time.hour()),
+            dec_to_bcd(date.day()),
+            weekday,
+            dec_to_bcd(date.month()),
+            dec_to_bcd(date.year() - 2000)
+        ]
+
+        # Write to RTC
+        self.i2c_bus.write_i2c_block_data(self.rtc_address, PCF85063A_REG_SECONDS, data)
+
+        # Clear oscillator stop flag
+        ctrl1 = self.i2c_bus.read_byte_data(self.rtc_address, PCF85063A_REG_CTRL1)
+        self.i2c_bus.write_byte_data(self.rtc_address, PCF85063A_REG_CTRL1, ctrl1 & 0x7F)
+
+    def _set_ds3231(self, date, time):
+        """Set DS3231 RTC time"""
+        if not self.i2c_bus:
+            raise Exception("I2C bus not connected")
+
+        import calendar
+        weekday = calendar.weekday(date.year(), date.month(), date.day())
+        weekday = weekday + 1  # DS3231 uses 1-7 for day of week
+
+        data = [
+            dec_to_bcd(time.second()),
+            dec_to_bcd(time.minute()),
+            dec_to_bcd(time.hour()),
+            weekday,
+            dec_to_bcd(date.day()),
+            dec_to_bcd(date.month()),
+            dec_to_bcd(date.year() - 2000)
+        ]
+
+        self.i2c_bus.write_i2c_block_data(self.rtc_address, DS3231_REG_SECONDS, data)
 
     def sync_from_system(self):
-        """Sync RTC from system time"""
+        """Sync RTC time edit fields from system time"""
         now = datetime.now()
         self.time_edit.setTime(QTime(now.hour, now.minute, now.second))
         self.date_edit.setDate(QDate(now.year, now.month, now.day))
+
+    def sync_to_system(self):
+        """Sync system time from RTC"""
+        if not self.rtc_active:
+            QMessageBox.warning(self, "Not Connected", "Please connect to RTC first.")
+            return
+
+        try:
+            if self.rtc_type == 'system':
+                QMessageBox.information(self, "Info", "Already using system RTC.")
+                return
+
+            # Read RTC time and set system clock
+            os.system('sudo hwclock --hctosys')
+            QMessageBox.information(self, "Success", "System time synchronized from RTC!")
+            logger.info("System time synchronized from RTC")
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to sync:\n{str(e)}")
+            logger.error(f"Failed to sync system time from RTC: {e}")
 
     def is_active(self):
         """Check if RTC is active"""
@@ -163,11 +484,25 @@ class RTCPanel(QWidget):
 
     def get_config(self):
         """Get configuration"""
-        return self.config
+        config = self.config.copy()
+        config['type'] = self.rtc_type
+        return config
 
     def apply_config(self, config):
         """Apply configuration"""
         self.config = config
+        rtc_type = config.get('type', 'pcf85063a')
+        if rtc_type == 'pcf85063a':
+            self.type_combo.setCurrentIndex(0)
+        elif rtc_type == 'ds3231':
+            self.type_combo.setCurrentIndex(1)
+        else:
+            self.type_combo.setCurrentIndex(2)
+
+    def rescan(self):
+        """Rescan for RTC devices"""
+        logger.info("Scanning for RTC devices...")
+        # Could scan I2C buses for known RTC addresses
 
     def cleanup(self):
         """Cleanup resources"""
