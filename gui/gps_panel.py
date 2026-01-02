@@ -22,17 +22,20 @@ logger = logging.getLogger(__name__)
 class GPSPanel(QWidget):
     """GPS module control panel with gpsd support"""
 
-    # Signal for thread-safe UI updates
+    # Signals for thread-safe UI updates
     data_updated = pyqtSignal(dict)
+    log_message_signal = pyqtSignal(str)  # Thread-safe log updates
 
     def __init__(self, config):
         super().__init__()
         self.config = config
         self.gpsd_socket = None
         self.gpsd_thread = None
+        self.serial_port = None  # Initialize serial_port attribute
         self.running = False
         self.is_logging = False
         self.log_file = None
+        self._config_enabled = config.get('enabled', False)  # Track configured state
 
         # GPS data
         self.latitude = 0.0
@@ -49,8 +52,9 @@ class GPSPanel(QWidget):
 
         self.init_ui()
 
-        # Connect signal for thread-safe updates
+        # Connect signals for thread-safe updates
         self.data_updated.connect(self._update_ui_from_data)
+        self.log_message_signal.connect(self._do_append_log)
 
     def init_ui(self):
         """Initialize user interface"""
@@ -161,9 +165,8 @@ class GPSPanel(QWidget):
 
     def connect_gps(self):
         """Connect to GPS via gpsd or serial"""
-        mode = self.config.get('mode', 'gpsd')
-
-        if mode == 'gpsd' or self.mode_combo.currentIndex() == 0:
+        # Use combo box as single source of truth for mode
+        if self.mode_combo.currentIndex() == 0:
             self._connect_gpsd()
         else:
             self._connect_serial()
@@ -373,10 +376,12 @@ class GPSPanel(QWidget):
 
         if 'time_utc' in data:
             self.time_utc = data['time_utc']
-            # Format time nicely
+            # Format time nicely - extract time part after 'T'
             if self.time_utc and 'T' in self.time_utc:
-                time_part = self.time_utc.split('T')[1].split('.')[0] if 'T' in self.time_utc else self.time_utc
+                time_part = self.time_utc.split('T')[1].split('.')[0]
                 self.time_label.setText(f"UTC Time:  {time_part}")
+            elif self.time_utc:
+                self.time_label.setText(f"UTC Time:  {self.time_utc}")
 
         if 'hdop' in data:
             self.hdop = data['hdop']
@@ -388,9 +393,12 @@ class GPSPanel(QWidget):
 
         if 'satellites' in data:
             self.satellites = data['satellites']
+            # Update display when either value changes
+            self.sat_count_label.setText(f"In View: {self.satellites} | Used: {self.satellites_used}")
 
         if 'satellites_used' in data:
             self.satellites_used = data['satellites_used']
+            # Update display when either value changes
             self.sat_count_label.setText(f"In View: {self.satellites} | Used: {self.satellites_used}")
 
         if 'satellite_list' in data:
@@ -430,6 +438,19 @@ class GPSPanel(QWidget):
 
     def _append_log(self, text):
         """Append text to raw log (thread-safe via signal)"""
+        # Emit signal for thread-safe UI update
+        self.log_message_signal.emit(text)
+
+        # Write to file if logging (file I/O is safe from background thread)
+        if self.is_logging and self.log_file:
+            try:
+                self.log_file.write(f"{datetime.now().isoformat()} {text}\n")
+                self.log_file.flush()
+            except Exception as e:
+                logger.error(f"Log write error: {e}")
+
+    def _do_append_log(self, text):
+        """Actually append text to raw log (called from main thread)"""
         # Limit log size
         if self.raw_log.document().lineCount() > 100:
             cursor = self.raw_log.textCursor()
@@ -438,14 +459,6 @@ class GPSPanel(QWidget):
             cursor.removeSelectedText()
 
         self.raw_log.append(text)
-
-        # Write to file if logging
-        if self.is_logging and self.log_file:
-            try:
-                self.log_file.write(f"{datetime.now().isoformat()} {text}\n")
-                self.log_file.flush()
-            except Exception as e:
-                logger.error(f"Log write error: {e}")
 
     def disconnect_gps(self):
         """Disconnect from GPS"""

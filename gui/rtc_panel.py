@@ -5,7 +5,7 @@ Optimized for HackerGadgets uConsole AIO Extension Board
 """
 
 import logging
-import os
+import subprocess
 from datetime import datetime
 
 from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QGroupBox,
@@ -179,9 +179,9 @@ class RTCPanel(QWidget):
     def _connect_system_rtc(self):
         """Use system RTC (hwclock)"""
         try:
-            # Check if we can access system RTC
-            result = os.popen('hwclock -r 2>/dev/null').read()
-            if result:
+            # Check if we can access system RTC using subprocess
+            result = subprocess.run(['hwclock', '-r'], capture_output=True, text=True, timeout=5)
+            if result.returncode == 0 and result.stdout:
                 self.rtc_active = True
                 self.rtc_type = 'system'
                 self.connect_btn.setText("Disconnect RTC")
@@ -193,6 +193,10 @@ class RTCPanel(QWidget):
                 logger.info("Connected to system RTC")
             else:
                 raise Exception("hwclock not accessible")
+        except subprocess.TimeoutExpired:
+            self.status_label.setText("System RTC: timeout")
+            self.status_label.setStyleSheet("color: red;")
+            logger.error("System RTC connection timed out")
         except Exception as e:
             self.status_label.setText(f"System RTC failed: {str(e)}")
             self.status_label.setStyleSheet("color: red;")
@@ -365,8 +369,9 @@ class RTCPanel(QWidget):
         months = bcd_to_dec(data[5] & 0x1F)
         years = bcd_to_dec(data[6]) + 2000
 
-        weekday_names = ['', 'Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
-        weekday_name = weekday_names[weekday] if weekday < 8 else 'Unknown'
+        # DS3231 uses 1-7 for weekday (1=Sunday, 7=Saturday)
+        weekday_names = ['Unknown', 'Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
+        weekday_name = weekday_names[weekday] if 1 <= weekday <= 7 else 'Unknown'
 
         self.time_label.setText(f"{hours:02d}:{minutes:02d}:{seconds:02d}")
         self.date_label.setText(f"{years}-{months:02d}-{days:02d} ({weekday_name})")
@@ -396,9 +401,16 @@ class RTCPanel(QWidget):
             logger.error(f"Failed to set RTC time: {e}")
 
     def _set_system_rtc(self, date, time):
-        """Set system RTC time"""
+        """Set system RTC time (safe from command injection)"""
+        # Format datetime string safely - no user input reaches the shell
         datetime_str = f"{date.year()}-{date.month():02d}-{date.day():02d} {time.hour():02d}:{time.minute():02d}:{time.second():02d}"
-        os.system(f'sudo hwclock --set --date="{datetime_str}"')
+        # Use subprocess with list args to avoid shell injection
+        result = subprocess.run(
+            ['sudo', 'hwclock', '--set', f'--date={datetime_str}'],
+            capture_output=True, text=True, timeout=10
+        )
+        if result.returncode != 0:
+            raise Exception(f"hwclock failed: {result.stderr}")
 
     def _set_pcf85063a(self, date, time):
         """Set PCF85063A RTC time"""
@@ -466,10 +478,19 @@ class RTCPanel(QWidget):
                 QMessageBox.information(self, "Info", "Already using system RTC.")
                 return
 
-            # Read RTC time and set system clock
-            os.system('sudo hwclock --hctosys')
-            QMessageBox.information(self, "Success", "System time synchronized from RTC!")
-            logger.info("System time synchronized from RTC")
+            # Read RTC time and set system clock using subprocess
+            result = subprocess.run(
+                ['sudo', 'hwclock', '--hctosys'],
+                capture_output=True, text=True, timeout=10
+            )
+            if result.returncode == 0:
+                QMessageBox.information(self, "Success", "System time synchronized from RTC!")
+                logger.info("System time synchronized from RTC")
+            else:
+                raise Exception(result.stderr)
+        except subprocess.TimeoutExpired:
+            QMessageBox.critical(self, "Error", "Sync operation timed out")
+            logger.error("Sync to system timed out")
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to sync:\n{str(e)}")
             logger.error(f"Failed to sync system time from RTC: {e}")
@@ -506,4 +527,7 @@ class RTCPanel(QWidget):
 
     def cleanup(self):
         """Cleanup resources"""
+        # Stop timer first to prevent callbacks on destroyed widgets
+        if hasattr(self, 'update_timer') and self.update_timer:
+            self.update_timer.stop()
         self.disconnect_rtc()

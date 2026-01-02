@@ -52,6 +52,7 @@ class HardwareControlCenter(QMainWindow):
         self.config_file = config_file or "configs/default.json"
         self.config = self.load_config()
         self.status_timer = None
+        self._init_status_until = 0  # Timestamp until which to preserve init status
 
         self.init_ui()
         self.init_modules()
@@ -194,11 +195,14 @@ class HardwareControlCenter(QMainWindow):
                     init_status.append(f"USB: Failed")
                     logger.error(f"USB initialization failed: {e}")
 
-            # Show combined status
+            # Show combined status and protect it from being overwritten
+            import time
             if init_status:
                 self.statusBar.showMessage(" | ".join(init_status), 5000)
+                self._init_status_until = time.time() + 5  # Protect for 5 seconds
             else:
                 self.statusBar.showMessage("No modules enabled", 3000)
+                self._init_status_until = time.time() + 3
 
         except Exception as e:
             logger.error(f"Module initialization error: {e}")
@@ -214,6 +218,12 @@ class HardwareControlCenter(QMainWindow):
 
     def update_status(self):
         """Update status bar with module information"""
+        import time
+
+        # Don't overwrite init status during protection period
+        if time.time() < self._init_status_until:
+            return
+
         status_parts = []
 
         try:
@@ -383,13 +393,25 @@ class HardwareControlCenter(QMainWindow):
         if dialog.exec_():
             new_config = dialog.get_config()
 
-            # Check if enabled states changed
+            # Check if any config values changed that require reinit
             needs_reinit = False
-            for module in ['gps', 'lora', 'rtlsdr', 'rtc', 'usb']:
-                old_enabled = self.config.get(module, {}).get('enabled', False)
-                new_enabled = new_config.get(module, {}).get('enabled', False)
-                if old_enabled != new_enabled:
-                    needs_reinit = True
+            reinit_keys = {
+                'gps': ['enabled', 'mode', 'gpsd_host', 'gpsd_port', 'device', 'baud_rate'],
+                'lora': ['enabled', 'mode', 'meshtastic_host', 'meshtastic_port', 'spi_device'],
+                'rtlsdr': ['enabled', 'device_index'],
+                'rtc': ['enabled', 'type', 'i2c_bus', 'i2c_address'],
+                'usb': ['enabled'],
+            }
+
+            for module, keys in reinit_keys.items():
+                old_mod = self.config.get(module, {})
+                new_mod = new_config.get(module, {})
+                for key in keys:
+                    if old_mod.get(key) != new_mod.get(key):
+                        needs_reinit = True
+                        logger.info(f"Config change in {module}.{key} requires reinit")
+                        break
+                if needs_reinit:
                     break
 
             self.config = new_config
