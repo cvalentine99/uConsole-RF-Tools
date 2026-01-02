@@ -1,31 +1,43 @@
 {
   "gps": {
     "enabled": true,
-    "device": "/dev/ttyUSB0",
+    "mode": "gpsd",
+    "gpsd_host": "localhost",
+    "gpsd_port": 2947,
+    "device": "/dev/ttyAMA10",
     "baud_rate": 9600,
     "auto_time_sync": true
   },
   "lora": {
-    "enabled": false,
-    "spi_device": "/dev/spidev0.0",
+    "enabled": true,
+    "mode": "meshtastic",
+    "meshtastic_host": "localhost",
+    "meshtastic_port": 443,
+    "spi_device": "/dev/spidev1.0",
+    "chip": "sx1262",
     "frequency": 915000000,
     "spreading_factor": 7,
     "bandwidth": 125000,
     "coding_rate": 5,
     "tx_power": 17,
-    "preamble_length": 8
+    "preamble_length": 8,
+    "gpio_busy": 24,
+    "gpio_reset": 25,
+    "gpio_irq": 26
   },
   "rtlsdr": {
-    "enabled": false,
+    "enabled": true,
     "device_index": 0,
     "sample_rate": 2048000,
     "frequency": 100000000,
-    "gain": "auto"
+    "gain": "auto",
+    "tuner": "r860"
   },
   "rtc": {
     "enabled": true,
-    "type": "ds3231",
-    "i2c_device": "/dev/i2c-1",
+    "type": "pcf85063a",
+    "i2c_bus": 22,
+    "i2c_address": 81,
     "sync_from_gps": true
   },
   "usb": {

@@ -82,6 +82,10 @@ class USBPanel(QWidget):
         except Exception as e:
             print(f"Error refreshing USB devices: {e}")
 
+    def is_active(self):
+        """Check if USB panel is active"""
+        return True  # USB enumeration is always available
+
     def get_config(self):
         """Get configuration"""
         return self.config
